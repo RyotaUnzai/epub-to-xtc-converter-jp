@@ -1,0 +1,21 @@
+{
+  "name": "epub-to-xtc-converter",
+  "private": true,
+  "workspaces": [
+    "cli"
+  ],
+  "scripts": {
+    "init": "node cli/index.js init",
+    "convert": "node cli/index.js convert",
+    "optimize": "node cli/index.js optimize",
+    "serve:web": "node scripts/serve-static.js",
+    "start": "npm run serve:web"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "busboy": "^1.6.0",
+    "pdfjs-dist": "^5.7.284",
+    "playwright-core": "^1.60.0",
+    "skia-canvas": "^3.0.8"
+  }
+}
