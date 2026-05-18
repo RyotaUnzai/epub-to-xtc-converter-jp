@@ -10,11 +10,13 @@ A tool for converting EPUB files to XTC/XTCH format and optimizing EPUBs for e-i
 - Convert EPUB books to Xteink's native XTC (1-bit) or XTCH (2-bit grayscale) format
 - Uses CREngine WASM for accurate rendering (same as CoolReader)
 - Batch processing - convert multiple files at once
+- Bundled Japanese font support with `Zen Old Mincho` for CJK EPUBs
 - Customizable settings:
   - Device presets (Xteink X4, X3, custom dimensions)
+  - Reading direction toggle for horizontal or Japanese vertical layout
   - Monitor DPI for accurate preview scaling
   - Font family, size, weight (Google Fonts + custom upload)
-  - Line height and margins
+  - Line height and per-side margins
   - Text alignment and hyphenation (42 languages)
   - Dithering with adjustable strength
   - Progress bar (page numbers, percentages, chapter marks)
@@ -54,9 +56,10 @@ A tool for converting EPUB files to XTC/XTCH format and optimizing EPUBs for e-i
 
 ### Converter Tab
 - **Device**: Select target device or enter custom dimensions
+- **Reading Direction**: Switch between horizontal layout and Japanese vertical layout
 - **Orientation**: Rotate output (0°, 90°, 180°, 270°)
 - **Monitor DPI**: Scale preview to match your monitor (default 96 DPI)
-- **Text Settings**: Font, size, weight, line height, margins, alignment, hyphenation language
+- **Text Settings**: Font, size, weight, line height, per-side margins, alignment, hyphenation language
 - **Image Settings**: Quality mode (1-bit/2-bit), dithering strength, dark mode
 - **Progress Bar**: Book/chapter progress, page numbers (X/Y), percentages, chapter marks
 
@@ -71,32 +74,32 @@ A tool for converting EPUB files to XTC/XTCH format and optimizing EPUBs for e-i
 For batch processing without a browser, use the Node.js CLI:
 
 ```bash
-cd cli
 npm install
 
 # Generate default settings file
-node index.js init
+npm run init -- --output cli/settings.json
 
-# Edit settings.json to set font.path to your TTF/OTF font file
+# The CLI will use the bundled Zen Old Mincho font by default.
+# If you want to force a specific font, edit cli/settings.json and set font.path.
 
 # Convert single file
-node index.js convert book.epub -o book.xtc -c settings.json
+npm run convert -- book.epub -o book.xtc -c cli/settings.json
 
 # Convert all EPUBs in a directory (recurses into subdirectories,
 # mirroring their structure under the output directory)
-node index.js convert ./epubs/ -o ./output/ -c settings.json
+npm run convert -- ./epubs/ -o ./output/ -c cli/settings.json
 
 # Use XTCH format (2-bit grayscale)
-node index.js convert book.epub -f xtch -c settings.json
+npm run convert -- book.epub -f xtch -c cli/settings.json
 
 # Optimize single EPUB for e-paper
-node index.js optimize book.epub -o book_optimized.epub -c settings.json
+npm run optimize -- book.epub -o book_optimized.epub -c cli/settings.json
 
 # Optimize all EPUBs in a directory
-node index.js optimize ./epubs/ -o ./output/ -c settings.json
+npm run optimize -- ./epubs/ -o ./output/ -c cli/settings.json
 
 # Optimize recursively (set "recursive": true in settings.json optimizer section)
-node index.js optimize ./library/ -o ./optimized/ -c settings.json
+npm run optimize -- ./library/ -o ./optimized/ -c cli/settings.json
 ```
 
 Optimization options are configured in `settings.json` under the `optimizer` section:
@@ -107,11 +110,17 @@ Example `settings.json`:
 ```json
 {
   "device": "xteink-x4",
-  "font": { "path": "./LiterataTT.ttf", "size": 34, "weight": 400 },
-  "margins": { "left": 16, "top": 16, "right": 16, "bottom": 16 },
+  "layout": { "mode": "horizontal" },
+  "font": { "path": "../assets/fonts/Zen_Old_Mincho/ZenOldMincho-Regular.ttf", "size": 34, "weight": 400 },
+  "margins": {
+    "top": { "value": 1, "unit": "line" },
+    "right": { "value": 1, "unit": "em" },
+    "bottom": { "value": 1, "unit": "line" },
+    "left": { "value": 1, "unit": "em" }
+  },
   "lineHeight": 120,
   "textAlign": "justify",
-  "hyphenation": { "enabled": true, "language": "en" },
+  "hyphenation": { "enabled": true, "language": "ja" },
   "output": { "format": "xtc", "dithering": true, "ditherStrength": 0.7 },
   "optimizer": {
     "removeCss": true,
@@ -151,29 +160,38 @@ Both formats include:
 
 See [XTC Format Specification](docs/xtc-format-spec.md) for technical details.
 
-## Self-Hosting
+## Local Run
 
-Clone the repository and serve the web directory:
+Clone the repository and install dependencies from the repository root:
 
 ```bash
 git clone https://github.com/bigbag/epub-optimizer-xteink.git
 cd epub-optimizer-xteink
-
-# Using Docker
-make docker-serve              # http://localhost:8000
-make docker-serve PORT=3000    # custom port
-
-# Using Python
-cd web && python -m http.server 8000
-
-# Using Node.js
-cd web && npx serve .
-
-# Using PHP
-cd web && php -S localhost:8000
+npm install
 ```
 
-Then open http://localhost:8000 in your browser.
+Then use one of these:
+
+```bash
+# CLI conversion
+npm run convert -- book.epub -o book.xtc
+
+# CLI optimization
+npm run optimize -- book.epub -o book_optimized.epub
+
+# Web UI on a local server
+npm start
+```
+
+In VS Code, run the task `Web: Start local server` from `Terminal > Run Task...` to start the web UI.
+The CLI prefers the bundled `Zen Old Mincho` font and falls back to a local system font if needed.
+For Japanese EPUBs, the bundled `Zen Old Mincho` font is copied into `assets/fonts/Zen_Old_Mincho/` and used by default.
+Set `layout.mode` to `vertical-jp` in `cli/settings.json` if you want Japanese vertical layout in CLI conversion.
+Margin entries accept `{ "value": number, "unit": "px" | "em" | "line" }`, where `em` scales with font size and `line` scales with line height.
+If you start the web UI, open `http://localhost:8000/web/` in your browser.
+Japanese vertical conversion uses the local browser renderer, so Chrome or Edge must be installed on the machine.
+Vertical preview now uses the same browser renderer, so the on-screen preview and exported file should match more closely.
+If Chrome is installed in a nonstandard location, set `CHROME_PATH` before running the converter.
 
 ## Project Structure
 
@@ -210,6 +228,7 @@ Then open http://localhost:8000 in your browser.
 - CREngine - EPUB rendering (bundled as WASM, see [docs/building-crengine-wasm.md](docs/building-crengine-wasm.md) for provenance and rebuild notes)
 - Google Fonts (loaded on demand): Literata, Lora, Merriweather, Source Serif 4, Noto Serif, Noto Sans, Open Sans, Roboto, EB Garamond, Crimson Pro
 - Custom TTF/OTF font upload also supported
+- Local Chrome/Edge installation required for Japanese vertical export
 
 ### CLI
 - Node.js 18+

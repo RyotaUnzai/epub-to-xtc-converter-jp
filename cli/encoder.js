@@ -135,10 +135,14 @@ function encodeXTH(data, width, height) {
  * @param {number} width - Page width
  * @param {number} height - Page height
  * @param {boolean} isHQ - true for XTCH (2-bit), false for XTC (1-bit)
+ * @param {number} readDirection - 0 = left-to-right, 2 = top-to-bottom
  * @returns {Uint8Array} XTC/XTCH container data
  */
-function buildXTCContainer(pages, metadata, toc, width, height, isHQ) {
+function buildXTCContainer(pages, metadata, toc, width, height, isHQ, readDirection) {
     const magic = isHQ ? 'XTCH' : 'XTC\0';
+    if (readDirection === undefined || readDirection === null) {
+        readDirection = 0;
+    }
 
     const title = metadata.title || 'Unknown';
     const author = metadata.author || '';
@@ -176,7 +180,7 @@ function buildXTCContainer(pages, metadata, toc, width, height, isHQ) {
     view.setUint16(4, 1, true); // Version
     view.setUint16(6, pages.length, true); // Page count
     // Individual flag bytes per XTC spec
-    bytes[8] = 0;   // readDirection (0 = L→R)
+    bytes[8] = readDirection;   // readDirection (0 = L→R, 2 = T→B)
     bytes[9] = 1;   // hasMetadata
     bytes[10] = 0;  // hasThumbnails
     bytes[11] = toc.length > 0 ? 1 : 0;  // hasChapters

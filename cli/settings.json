@@ -1,23 +1,26 @@
 {
-  "device": "xteink-x4",
-  "width": 480,
-  "height": 800,
+  "device": "xteink-x3",
+  "width": 528,
+  "height": 792,
+  "layout": {
+    "mode": "vertical-jp"
+  },
   "font": {
-    "path": "/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
+    "path": "../assets/fonts/Zen_Old_Mincho/ZenOldMincho-Regular.ttf",
     "size": 34,
     "weight": 400
   },
   "margins": {
-    "left": 16,
-    "top": 16,
-    "right": 16,
-    "bottom": 16
+    "top": { "value": 1, "unit": "line" },
+    "right": { "value": 1.0, "unit": "em" },
+    "bottom": { "value": 1, "unit": "line" },
+    "left": { "value": 1.0, "unit": "em" }
   },
   "lineHeight": 120,
   "textAlign": "justify",
   "hyphenation": {
     "enabled": true,
-    "language": "en"
+    "language": "ja"
   },
   "output": {
     "format": "xtc",

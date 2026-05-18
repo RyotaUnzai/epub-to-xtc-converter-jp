@@ -195,6 +195,11 @@ public:
         m_view->propsApply(p);
     }
 
+    void setStyleSheet(std::string css) {
+        m_view->setStyleSheet(lString8(css.c_str()));
+        m_view->Render(m_w, m_h, NULL);
+    }
+
     void setTextAlign(int /*mode*/) {
         // CoolReader's text alignment is a CSS document-level setting.
         // No direct LVDocView setter; left as no-op for now.
@@ -342,6 +347,7 @@ EMSCRIPTEN_BINDINGS(crengine_module) {
         .function("setFontWeight",          &EpubRenderer::setFontWeight)
         .function("setInterlineSpace",      &EpubRenderer::setInterlineSpace)
         .function("setFontFace",            &EpubRenderer::setFontFace)
+        .function("setStyleSheet",          &EpubRenderer::setStyleSheet)
         .function("setTextAlign",           &EpubRenderer::setTextAlign)
         .function("setHyphenation",         &EpubRenderer::setHyphenation)
         .function("setHyphenationLanguage", &EpubRenderer::setHyphenationLanguage)

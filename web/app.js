@@ -10,6 +10,16 @@ let currentFileIndex = 0;
 let ditherWorker = null;
 let ditherCallbacks = new Map();
 let ditherJobId = 0;
+let verticalPreviewSessionId = null;
+let verticalPreviewSignature = '';
+let verticalPreviewDirty = false;
+let verticalPreviewLoading = null;
+let htmlPreviewSessionId = null;
+let htmlPreviewSignature = '';
+let htmlPreviewDirty = false;
+let htmlPreviewLoading = null;
+let renderRequestId = 0;
+let marginPreviewTimer = null;
 
 // Device presets
 const DEVICES = {
@@ -46,6 +56,7 @@ const optimizeBtn = document.getElementById('optimizeBtn');
 
 // Settings
 const devicePreset = document.getElementById('devicePreset');
+const layoutMode = document.getElementById('layoutMode');
 const customDimensions = document.getElementById('customDimensions');
 const fontFamily = document.getElementById('fontFamily');
 const fontSize = document.getElementById('fontSize');
@@ -54,8 +65,14 @@ const fontWeight = document.getElementById('fontWeight');
 const fontWeightNum = document.getElementById('fontWeightNum');
 const lineHeight = document.getElementById('lineHeight');
 const lineHeightNum = document.getElementById('lineHeightNum');
-const margin = document.getElementById('margin');
-const marginNum = document.getElementById('marginNum');
+const marginTop = document.getElementById('marginTop');
+const marginTopUnit = document.getElementById('marginTopUnit');
+const marginBottom = document.getElementById('marginBottom');
+const marginBottomUnit = document.getElementById('marginBottomUnit');
+const marginLeft = document.getElementById('marginLeft');
+const marginLeftUnit = document.getElementById('marginLeftUnit');
+const marginRight = document.getElementById('marginRight');
+const marginRightUnit = document.getElementById('marginRightUnit');
 const textAlign = document.getElementById('textAlign');
 const hyphenation = document.getElementById('hyphenation');
 const hyphenationLang = document.getElementById('hyphenationLang');
@@ -108,8 +125,16 @@ async function init() {
     }
 }
 
-// Google Fonts configuration - loaded on demand from google/fonts repo
-var GOOGLE_FONTS = {
+// Font sources loaded on demand. Most are remote Google Fonts, while the Japanese
+// default font is bundled locally so the app still works offline.
+var FONT_FAMILIES = {
+    'Zen Old Mincho': [
+        { url: '../assets/fonts/Zen_Old_Mincho/ZenOldMincho-Regular.ttf', name: 'ZenOldMincho-Regular.ttf' },
+        { url: '../assets/fonts/Zen_Old_Mincho/ZenOldMincho-Medium.ttf', name: 'ZenOldMincho-Medium.ttf' },
+        { url: '../assets/fonts/Zen_Old_Mincho/ZenOldMincho-SemiBold.ttf', name: 'ZenOldMincho-SemiBold.ttf' },
+        { url: '../assets/fonts/Zen_Old_Mincho/ZenOldMincho-Bold.ttf', name: 'ZenOldMincho-Bold.ttf' },
+        { url: '../assets/fonts/Zen_Old_Mincho/ZenOldMincho-Black.ttf', name: 'ZenOldMincho-Black.ttf' }
+    ],
     'Literata': [
         { url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/literata/Literata%5Bopsz%2Cwght%5D.ttf', name: 'Literata-Regular.ttf' },
         { url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/literata/Literata-Italic%5Bopsz%2Cwght%5D.ttf', name: 'Literata-Italic.ttf' }
@@ -153,23 +178,22 @@ var GOOGLE_FONTS = {
 var loadedFonts = new Set();
 
 async function loadDefaultFonts() {
-    // Load Literata (default font) from Google Fonts
-    await loadGoogleFont('Literata');
+    await loadFontFamily(fontFamily.value || 'Zen Old Mincho');
 }
 
-async function loadGoogleFont(familyName) {
+async function loadFontFamily(familyName) {
     if (loadedFonts.has(familyName)) {
         console.log('Font already loaded:', familyName);
         return true;
     }
 
-    var fontConfig = GOOGLE_FONTS[familyName];
+    var fontConfig = FONT_FAMILIES[familyName];
     if (!fontConfig) {
         console.warn('Unknown font family:', familyName);
         return false;
     }
 
-    console.log('Loading Google Font:', familyName);
+    console.log('Loading font family:', familyName);
     var success = false;
 
     for (var i = 0; i < fontConfig.length; i++) {
@@ -215,6 +239,756 @@ function initDitherWorker() {
     }
 }
 
+function isVerticalJapaneseLayout() {
+    return layoutMode && layoutMode.value === 'vertical-jp';
+}
+
+function isHtmlDocumentFile(file) {
+    return !!(file && file.name && /\.(html|htm|xhtml)$/i.test(file.name));
+}
+
+function getFileBaseName(name) {
+    return String(name || '').replace(/\.[^.]+$/, '');
+}
+
+function replaceFileExtension(name, extension) {
+    return getFileBaseName(name) + '.' + extension;
+}
+
+function isBrowserRendererFile(file) {
+    return isVerticalJapaneseLayout() || isHtmlDocumentFile(file);
+}
+
+function parseMarginSide(value, unit, fontSizePx, lineHeightPercent) {
+    var lineHeightPx = fontSizePx * ((lineHeightPercent || 120) / 100);
+
+    switch (unit) {
+        case 'em':
+            return value * fontSizePx;
+        case 'line':
+            return value * lineHeightPx;
+        case 'px':
+        default:
+            return value;
+    }
+}
+
+function getMarginSettings() {
+    return {
+        top: {
+            value: parseFloat(marginTop && marginTop.value) || 0,
+            unit: marginTopUnit && marginTopUnit.value ? marginTopUnit.value : 'px'
+        },
+        right: {
+            value: parseFloat(marginRight && marginRight.value) || 0,
+            unit: marginRightUnit && marginRightUnit.value ? marginRightUnit.value : 'px'
+        },
+        bottom: {
+            value: parseFloat(marginBottom && marginBottom.value) || 0,
+            unit: marginBottomUnit && marginBottomUnit.value ? marginBottomUnit.value : 'px'
+        },
+        left: {
+            value: parseFloat(marginLeft && marginLeft.value) || 0,
+            unit: marginLeftUnit && marginLeftUnit.value ? marginLeftUnit.value : 'px'
+        }
+    };
+}
+
+function getResolvedMarginPixels() {
+    var fontSizePx = parseInt(fontSize.value) || 34;
+    var lineHeightPercent = parseInt(lineHeight.value) || 120;
+    var margins = getMarginSettings();
+    return {
+        top: Math.max(0, Math.round(parseMarginSide(margins.top.value, margins.top.unit, fontSizePx, lineHeightPercent))),
+        right: Math.max(0, Math.round(parseMarginSide(margins.right.value, margins.right.unit, fontSizePx, lineHeightPercent))),
+        bottom: Math.max(0, Math.round(parseMarginSide(margins.bottom.value, margins.bottom.unit, fontSizePx, lineHeightPercent))),
+        left: Math.max(0, Math.round(parseMarginSide(margins.left.value, margins.left.unit, fontSizePx, lineHeightPercent)))
+    };
+}
+
+function schedulePreviewRefresh() {
+    if (marginPreviewTimer) {
+        clearTimeout(marginPreviewTimer);
+    }
+    marginPreviewTimer = setTimeout(function() {
+        marginPreviewTimer = null;
+        renderCurrentPage();
+    }, 120);
+}
+
+function injectVerticalJapaneseCss(html) {
+    var safeInset = 8;
+    var rubyInset = 6;
+    var blockEndReserve = 8;
+    var padTop = 16 + safeInset + rubyInset;
+    var padRight = 16 + safeInset;
+    var padBottom = 16 + safeInset;
+    var padLeft = 16 + safeInset + rubyInset + blockEndReserve;
+    var verticalCss = '<style type="text/css">' +
+        'html, body { margin: 0 !important; padding: 0 !important; width: 100% !important; height: 100% !important; overflow: auto !important; scrollbar-gutter: stable both-edges !important; background: #fff !important; color: #000 !important; }' +
+        'body { writing-mode: vertical-rl !important; -webkit-writing-mode: vertical-rl !important; -epub-writing-mode: vertical-rl !important; text-orientation: upright !important; -webkit-text-orientation: upright !important; -epub-text-orientation: upright !important; direction: rtl !important; unicode-bidi: plaintext !important; line-break: strict !important; word-break: normal !important; letter-spacing: 0 !important; word-spacing: 0 !important; text-align: start !important; text-justify: none !important; box-sizing: border-box !important; padding: ' + padTop + 'px ' + padRight + 'px ' + padBottom + 'px ' + padLeft + 'px !important; }' +
+        'body * { writing-mode: inherit !important; -webkit-writing-mode: inherit !important; -epub-writing-mode: inherit !important; text-orientation: inherit !important; -webkit-text-orientation: inherit !important; -epub-text-orientation: inherit !important; direction: inherit !important; unicode-bidi: inherit !important; }' +
+        'p { text-indent: 0 !important; margin: 0.25em 0 !important; }' +
+        'ruby { ruby-position: over; ruby-align: center; ruby-merge: separate; line-height: 1 !important; }' +
+        'rt, rp { writing-mode: vertical-rl !important; -webkit-writing-mode: vertical-rl !important; -epub-writing-mode: vertical-rl !important; text-orientation: upright !important; -webkit-text-orientation: upright !important; -epub-text-orientation: upright !important; font-size: 0.5em !important; line-height: 1 !important; margin: 0 !important; padding: 0 !important; letter-spacing: 0 !important; white-space: nowrap !important; transform: none !important; rotate: none !important; }' +
+        '</style>';
+
+    if (html.indexOf('</head>') !== -1) {
+        return html.replace('</head>', verticalCss + '</head>');
+    }
+
+    return verticalCss + html;
+}
+
+function injectVerticalJapaneseOpf(opf) {
+    var updated = opf;
+
+    if (!/\bdir\s*=\s*["']rtl["']/i.test(updated)) {
+        updated = updated.replace(/<package\b([^>]*)>/i, function(match, attrs) {
+            if (/\bdir\s*=/i.test(attrs)) {
+                return match;
+            }
+            return '<package' + attrs + ' dir="rtl">';
+        });
+    }
+
+    if (!/page-progression-direction\s*=/i.test(updated)) {
+        updated = updated.replace(/<spine\b([^>]*)>/i, function(match, attrs) {
+            if (/page-progression-direction\s*=/i.test(attrs)) {
+                return match;
+            }
+            return '<spine' + attrs + ' page-progression-direction="rtl">';
+        });
+    }
+
+    if (!/name\s*=\s*["']primary-writing-mode["']/i.test(updated)) {
+        updated = updated.replace(/<metadata\b([^>]*)>/i, function(match) {
+            return match + '\n    <meta name="primary-writing-mode" content="vertical-rl"/>';
+        });
+    }
+
+    return updated;
+}
+
+function getLayoutStyleSheet() {
+    if (isVerticalJapaneseLayout()) {
+        return [
+            'html, body {',
+            '  margin: 0 !important;',
+            '  padding: 0 !important;',
+            '  width: 100% !important;',
+            '  height: 100% !important;',
+            '  overflow: auto !important;',
+            '  scrollbar-gutter: stable both-edges !important;',
+            '  background: #fff !important;',
+            '  color: #000 !important;',
+            '}',
+            'body {',
+            '  writing-mode: vertical-rl !important;',
+            '  -epub-writing-mode: vertical-rl !important;',
+            '  -webkit-writing-mode: vertical-rl !important;',
+            '  text-orientation: upright !important;',
+            '  -epub-text-orientation: upright !important;',
+            '  -webkit-text-orientation: upright !important;',
+            '  direction: rtl !important;',
+            '  unicode-bidi: plaintext !important;',
+            '  line-break: strict !important;',
+            '  word-break: normal !important;',
+            '  letter-spacing: 0 !important;',
+            '  word-spacing: 0 !important;',
+            '  text-align: start !important;',
+            '  text-justify: none !important;',
+            '}',
+            'body * {',
+            '  writing-mode: inherit !important;',
+            '  -webkit-writing-mode: inherit !important;',
+            '  -epub-writing-mode: inherit !important;',
+            '  text-orientation: inherit !important;',
+            '  -webkit-text-orientation: inherit !important;',
+            '  -epub-text-orientation: inherit !important;',
+            '  direction: inherit !important;',
+            '  unicode-bidi: inherit !important;',
+            '}',
+            'p { text-indent: 0; margin: 0.25em 0; }',
+            'ruby { ruby-position: over; ruby-align: center; ruby-merge: separate; line-height: 1 !important; }',
+            'rt, rp {',
+            '  writing-mode: vertical-rl !important;',
+            '  -webkit-writing-mode: vertical-rl !important;',
+            '  -epub-writing-mode: vertical-rl !important;',
+            '  text-orientation: upright !important;',
+            '  -webkit-text-orientation: upright !important;',
+            '  -epub-text-orientation: upright !important;',
+            '  font-size: 0.5em !important;',
+            '  line-height: 1 !important;',
+            '  margin: 0 !important;',
+            '  padding: 0 !important;',
+            '  letter-spacing: 0 !important;',
+            '  white-space: nowrap !important;',
+            '  transform: none !important;',
+            '  rotate: none !important;',
+            '}'
+        ].join('\n');
+    }
+
+    return [
+        'html, body, body * {',
+        '  writing-mode: horizontal-tb !important;',
+        '  -webkit-writing-mode: horizontal-tb !important;',
+        '  text-orientation: mixed !important;',
+        '  -webkit-text-orientation: mixed !important;',
+        '  direction: ltr !important;',
+        '  unicode-bidi: plaintext !important;',
+        '}'
+    ].join('\n');
+}
+
+function applyLayoutStyleSheet() {
+    if (renderer && renderer.setStyleSheet) {
+        renderer.setStyleSheet(getLayoutStyleSheet());
+    }
+}
+
+function markVerticalPreviewDirty() {
+    if (isVerticalJapaneseLayout()) {
+        verticalPreviewDirty = true;
+    }
+}
+
+function markTextPreviewDirty() {
+    var fileData = loadedFiles[currentFileIndex];
+    if (fileData && isHtmlDocumentFile(fileData.file)) {
+        htmlPreviewDirty = true;
+    } else if (isVerticalJapaneseLayout()) {
+        verticalPreviewDirty = true;
+    }
+}
+
+function getVerticalPreviewSignature(file) {
+    var settings = buildExportSettings();
+    return JSON.stringify({
+        name: file && file.name ? file.name : '',
+        size: file && file.size ? file.size : 0,
+        lastModified: file && file.lastModified ? file.lastModified : 0,
+        settings: {
+            device: settings.device,
+            width: settings.width,
+            height: settings.height,
+            layout: settings.layout,
+            font: settings.font,
+            margins: settings.margins,
+            lineHeight: settings.lineHeight,
+            textAlign: settings.textAlign,
+            hyphenation: settings.hyphenation
+        }
+    });
+}
+
+async function closeVerticalPreviewSession() {
+    if (!verticalPreviewSessionId) {
+        return;
+    }
+
+    var sessionId = verticalPreviewSessionId;
+    verticalPreviewSessionId = null;
+    verticalPreviewSignature = '';
+    verticalPreviewDirty = false;
+
+    try {
+        await fetch('/api/preview-session/' + encodeURIComponent(sessionId), {
+            method: 'DELETE'
+        });
+    } catch (err) {
+        console.warn('Failed to close preview session:', err);
+    }
+}
+
+async function createVerticalPreviewSession(file) {
+    var settings = buildExportSettings();
+    var formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('settings', JSON.stringify(settings));
+
+    var response = await fetch('/api/preview-session', {
+        method: 'POST',
+        body: formData
+    });
+
+    if (!response.ok) {
+        var message = await response.text().catch(function() { return ''; });
+        throw new Error(message || ('Preview session failed: ' + response.status));
+    }
+
+    return await response.json();
+}
+
+async function ensureVerticalPreviewSession(forceReload) {
+    if (!isVerticalJapaneseLayout() || loadedFiles.length === 0 || !loadedFiles[currentFileIndex]) {
+        return null;
+    }
+
+    var file = loadedFiles[currentFileIndex].file;
+    while (true) {
+        var signature = getVerticalPreviewSignature(file);
+
+        if (!forceReload && !verticalPreviewDirty && verticalPreviewSessionId && signature === verticalPreviewSignature) {
+            return {
+                sessionId: verticalPreviewSessionId,
+                signature: verticalPreviewSignature
+            };
+        }
+
+        if (verticalPreviewLoading) {
+            await verticalPreviewLoading;
+            continue;
+        }
+
+        verticalPreviewLoading = (async function() {
+            await closeVerticalPreviewSession();
+
+            var session = await createVerticalPreviewSession(file);
+            verticalPreviewSessionId = session.sessionId;
+            verticalPreviewSignature = signature;
+            verticalPreviewDirty = false;
+
+            totalPages = session.pageCount || 0;
+            currentToc = session.toc || [];
+            updateChapterList();
+            fileTitleFromSession(session);
+            if (loadedFiles[currentFileIndex]) {
+                loadedFiles[currentFileIndex].loaded = true;
+            }
+            exportBtn.disabled = false;
+            exportPageBtn.disabled = false;
+            exportAllBtn.disabled = false;
+
+            return session;
+        })();
+
+        try {
+            return await verticalPreviewLoading;
+        } finally {
+            verticalPreviewLoading = null;
+        }
+    }
+}
+
+function fileTitleFromSession(session) {
+    var info = session && session.info ? session.info : {};
+    var fileData = loadedFiles[currentFileIndex];
+    bookTitle.textContent = info.title || (fileData && fileData.name) || 'Untitled';
+    bookAuthor.textContent = info.author || info.authors || 'Unknown author';
+}
+
+async function renderVerticalPreviewPage() {
+    var session = await ensureVerticalPreviewSession(false);
+    if (!session || !verticalPreviewSessionId) {
+        return;
+    }
+
+    var requestId = ++renderRequestId;
+    var response = await fetch('/api/preview-session/' + encodeURIComponent(verticalPreviewSessionId) + '/page/' + currentPage + '.png', {
+        cache: 'no-store'
+    });
+
+    if (!response.ok) {
+        var message = await response.text().catch(function() { return ''; });
+        throw new Error(message || ('Preview render failed: ' + response.status));
+    }
+
+    var blob = await response.blob();
+    var bitmap = await createImageBitmap(blob);
+
+    try {
+        if (requestId !== renderRequestId) {
+            return;
+        }
+
+        previewCanvas.width = SCREEN_WIDTH;
+        previewCanvas.height = SCREEN_HEIGHT;
+        var canvas = document.createElement('canvas');
+        canvas.width = SCREEN_WIDTH;
+        canvas.height = SCREEN_HEIGHT;
+        var canvasCtx = canvas.getContext('2d');
+        canvasCtx.drawImage(bitmap, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+        var imageData = canvasCtx.getImageData(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+        if (enableNegative.checked) {
+            applyNegative(imageData);
+        }
+        drawStatusBar(imageData);
+        ctx.putImageData(imageData, 0, 0);
+
+        pageInfo.textContent = 'Page ' + (currentPage + 1) + ' / ' + totalPages;
+        prevBtn.disabled = currentPage === 0;
+        nextBtn.disabled = currentPage >= totalPages - 1;
+        updateCurrentChapter();
+    } finally {
+        if (bitmap && bitmap.close) {
+            bitmap.close();
+        }
+    }
+}
+
+async function closeHtmlPreviewSession() {
+    if (!htmlPreviewSessionId) {
+        return;
+    }
+
+    var sessionId = htmlPreviewSessionId;
+    htmlPreviewSessionId = null;
+    htmlPreviewSignature = '';
+    htmlPreviewDirty = false;
+
+    try {
+        await fetch('/api/preview-session/' + encodeURIComponent(sessionId), {
+            method: 'DELETE'
+        });
+    } catch (err) {
+        console.warn('Failed to close HTML preview session:', err);
+    }
+}
+
+async function createHtmlPreviewSession(file) {
+    var settings = buildExportSettings();
+    var formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('settings', JSON.stringify(settings));
+
+    var response = await fetch('/api/preview-session', {
+        method: 'POST',
+        body: formData
+    });
+
+    if (!response.ok) {
+        var message = await response.text().catch(function() { return ''; });
+        throw new Error(message || ('Preview session failed: ' + response.status));
+    }
+
+    return await response.json();
+}
+
+function getHtmlPreviewSignature(file) {
+    var settings = buildExportSettings();
+    return JSON.stringify({
+        name: file && file.name ? file.name : '',
+        size: file && file.size ? file.size : 0,
+        lastModified: file && file.lastModified ? file.lastModified : 0,
+        settings: {
+            device: settings.device,
+            width: settings.width,
+            height: settings.height,
+            layout: settings.layout,
+            font: settings.font,
+            margins: settings.margins,
+            lineHeight: settings.lineHeight,
+            textAlign: settings.textAlign,
+            hyphenation: settings.hyphenation
+        }
+    });
+}
+
+async function ensureHtmlPreviewSession(forceReload) {
+    if (loadedFiles.length === 0 || !loadedFiles[currentFileIndex]) {
+        return null;
+    }
+
+    var file = loadedFiles[currentFileIndex].file;
+    while (true) {
+        var signature = getHtmlPreviewSignature(file);
+
+        if (!forceReload && !htmlPreviewDirty && htmlPreviewSessionId && signature === htmlPreviewSignature) {
+            return {
+                sessionId: htmlPreviewSessionId,
+                signature: htmlPreviewSignature
+            };
+        }
+
+        if (htmlPreviewLoading) {
+            await htmlPreviewLoading;
+            continue;
+        }
+
+        htmlPreviewLoading = (async function() {
+            await closeHtmlPreviewSession();
+
+            var session = await createHtmlPreviewSession(file);
+            htmlPreviewSessionId = session.sessionId;
+            htmlPreviewSignature = signature;
+            htmlPreviewDirty = false;
+
+            totalPages = session.pageCount || 0;
+            currentToc = session.toc || [];
+            updateChapterList();
+            fileTitleFromSession(session);
+            if (loadedFiles[currentFileIndex]) {
+                loadedFiles[currentFileIndex].loaded = true;
+            }
+            exportBtn.disabled = false;
+            exportPageBtn.disabled = true;
+            exportAllBtn.disabled = false;
+
+            return session;
+        })();
+
+        try {
+            return await htmlPreviewLoading;
+        } finally {
+            htmlPreviewLoading = null;
+        }
+    }
+}
+
+async function renderHtmlPreviewPage() {
+    var session = await ensureHtmlPreviewSession(false);
+    if (!session || !htmlPreviewSessionId) {
+        return;
+    }
+
+    var requestId = ++renderRequestId;
+    var response = await fetch('/api/preview-session/' + encodeURIComponent(htmlPreviewSessionId) + '/page/' + currentPage + '.png', {
+        cache: 'no-store'
+    });
+
+    if (!response.ok) {
+        var message = await response.text().catch(function() { return ''; });
+        throw new Error(message || ('Preview render failed: ' + response.status));
+    }
+
+    var blob = await response.blob();
+    var bitmap = await createImageBitmap(blob);
+
+    try {
+        if (requestId !== renderRequestId) {
+            return;
+        }
+
+        previewCanvas.width = SCREEN_WIDTH;
+        previewCanvas.height = SCREEN_HEIGHT;
+        var canvas = document.createElement('canvas');
+        canvas.width = SCREEN_WIDTH;
+        canvas.height = SCREEN_HEIGHT;
+        var canvasCtx = canvas.getContext('2d');
+        canvasCtx.drawImage(bitmap, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+        var imageData = canvasCtx.getImageData(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+        if (enableNegative.checked) {
+            applyNegative(imageData);
+        }
+        drawStatusBar(imageData);
+        ctx.putImageData(imageData, 0, 0);
+
+        pageInfo.textContent = 'Page ' + (currentPage + 1) + ' / ' + totalPages;
+        prevBtn.disabled = currentPage === 0;
+        nextBtn.disabled = currentPage >= totalPages - 1;
+        updateCurrentChapter();
+    } finally {
+        if (bitmap && bitmap.close) {
+            bitmap.close();
+        }
+    }
+}
+
+function buildExportSettings() {
+    return {
+        device: 'custom',
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+        layout: {
+            mode: layoutMode ? layoutMode.value : 'horizontal'
+        },
+        font: {
+            path: null,
+            size: parseInt(fontSize.value) || 34,
+            weight: parseInt(fontWeight.value) || 400
+        },
+        margins: getMarginSettings(),
+        lineHeight: parseInt(lineHeight.value) || 120,
+        textAlign: textAlign.value || 'justify',
+        hyphenation: {
+            enabled: parseInt(hyphenation.value) !== 0,
+            language: hyphenationLang.value || 'auto'
+        },
+        output: {
+            format: qualityMode.value === 'hq' ? 'xtch' : 'xtc',
+            dithering: enableDithering.checked,
+            ditherStrength: (parseInt(ditherStrength.value) || 70) / 100,
+            negative: enableNegative.checked
+        }
+    };
+}
+
+function sleep(ms) {
+    return new Promise(function(resolve) {
+        setTimeout(resolve, ms);
+    });
+}
+
+function formatBrowserJobStatus(job) {
+    if (!job) {
+        return 'Generating XTC with browser renderer...';
+    }
+
+    if (job.status === 'error') {
+        return 'Export failed: ' + (job.message || job.error || 'Unknown error');
+    }
+
+    if (job.stage === 'init' || job.stage === 'queued') {
+        return job.message || 'Generating XTC with browser renderer...';
+    }
+
+    if (job.stage === 'measure') {
+        return job.message || 'Measuring vertical layout...';
+    }
+
+    if (job.status === 'done') {
+        return 'Export complete!';
+    }
+
+    var text = job.message || 'Generating XTC with browser renderer...';
+    if (job.total > 0) {
+        text += ' (' + job.current + ' / ' + job.total + ')';
+    }
+    if (job.pageTimeMs) {
+        text += ' - ' + job.pageTimeMs + ' ms';
+    }
+    return text;
+}
+
+async function pollBrowserConvertJob(jobId, onProgress) {
+    while (true) {
+        var response = await fetch('/api/convert-jobs/' + encodeURIComponent(jobId), {
+            cache: 'no-store'
+        });
+
+        if (!response.ok) {
+            var message = await response.text().catch(function() { return ''; });
+            throw new Error(message || ('Failed to read conversion progress: ' + response.status));
+        }
+
+        var job = await response.json();
+        if (onProgress) {
+            onProgress(job);
+        }
+
+        if (job.status === 'error') {
+            throw new Error(job.message || job.error || 'Conversion failed');
+        }
+
+        if (job.status === 'done') {
+            if (onProgress) {
+                onProgress({
+                    status: 'done',
+                    stage: 'done',
+                    current: job.total || job.current || 1,
+                    total: job.total || job.current || 1,
+                    percent: 100,
+                    message: 'Downloading converted file...'
+                });
+            }
+
+            var fileResponse = await fetch('/api/convert-jobs/' + encodeURIComponent(jobId) + '/file', {
+                cache: 'no-store'
+            });
+
+            if (!fileResponse.ok) {
+                var downloadMessage = await fileResponse.text().catch(function() { return ''; });
+                throw new Error(downloadMessage || ('Failed to download converted file: ' + fileResponse.status));
+            }
+
+            var buffer = new Uint8Array(await fileResponse.arrayBuffer());
+
+            if (onProgress) {
+                onProgress({
+                    status: 'done',
+                    stage: 'done',
+                    current: job.total || job.current || 1,
+                    total: job.total || job.current || 1,
+                    percent: 100,
+                    message: 'Export complete!'
+                });
+            }
+
+            return buffer;
+        }
+
+        await sleep(500);
+    }
+}
+
+async function exportWithBrowserBackend(file, outputName, onProgress) {
+    var settings = buildExportSettings();
+    var formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('settings', JSON.stringify(settings));
+
+    var response = await fetch('/api/convert', {
+        method: 'POST',
+        headers: {
+            'X-Progress-Mode': 'job'
+        },
+        body: formData
+    });
+
+    if (response.status === 202) {
+        var jobInfo = await response.json();
+        if (!jobInfo || !jobInfo.jobId) {
+            throw new Error('Conversion job creation failed');
+        }
+        return await pollBrowserConvertJob(jobInfo.jobId, onProgress);
+    }
+
+    if (!response.ok) {
+        var message = await response.text().catch(function() { return ''; });
+        throw new Error(message || ('Server conversion failed: ' + response.status));
+    }
+
+    if (onProgress) {
+        onProgress({
+            status: 'done',
+            stage: 'done',
+            current: 1,
+            total: 1,
+            percent: 100,
+            message: 'Export complete!'
+        });
+    }
+
+    return new Uint8Array(await response.arrayBuffer());
+}
+
+async function prepareEpubBytesForLayoutMode(file) {
+    var sourceData = new Uint8Array(await file.arrayBuffer());
+
+    if (!isVerticalJapaneseLayout()) {
+        return sourceData;
+    }
+
+    var zip = await JSZip.loadAsync(sourceData);
+    var files = Object.keys(zip.files);
+
+    for (var i = 0; i < files.length; i++) {
+        var filePath = files[i];
+        if (/\.(html|xhtml|htm)$/i.test(filePath)) {
+            var html = await zip.files[filePath].async('string');
+            zip.file(filePath, injectVerticalJapaneseCss(html));
+            continue;
+        }
+
+        if (/\.opf$/i.test(filePath)) {
+            var opf = await zip.files[filePath].async('string');
+            zip.file(filePath, injectVerticalJapaneseOpf(opf));
+        }
+    }
+
+    var buffer = await zip.generateAsync({
+        type: 'uint8array',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
+    });
+
+    return buffer;
+}
+
 // ==================== File Handling ====================
 function setupDropZone() {
     dropZone.addEventListener('click', function() {
@@ -242,21 +1016,21 @@ function setupDropZone() {
 }
 
 function handleFiles(files) {
-    const epubFiles = Array.from(files).filter(function(f) {
-        return f.name.endsWith('.epub');
+    const supportedFiles = Array.from(files).filter(function(f) {
+        return /\.(epub|html?|xhtml)$/i.test(f.name);
     });
-    if (epubFiles.length === 0) {
-        alert('Please select EPUB files');
+    if (supportedFiles.length === 0) {
+        alert('Please select EPUB or HTML/XHTML files');
         return;
     }
 
-    for (var i = 0; i < epubFiles.length; i++) {
-        var file = epubFiles[i];
+    for (var i = 0; i < supportedFiles.length; i++) {
+        var file = supportedFiles[i];
         var exists = loadedFiles.some(function(f) {
             return f.name === file.name;
         });
         if (!exists) {
-            loadedFiles.push({ file: file, name: file.name, loaded: false });
+            loadedFiles.push({ file: file, name: file.name, loaded: false, kind: isHtmlDocumentFile(file) ? 'html' : 'epub' });
         }
     }
 
@@ -334,7 +1108,44 @@ async function switchToFile(index) {
     updateFileList();
 
     var fileData = loadedFiles[index];
-    var data = new Uint8Array(await fileData.file.arrayBuffer());
+    if (isHtmlDocumentFile(fileData.file)) {
+        closeVerticalPreviewSession().catch(function() {});
+    } else {
+        closeHtmlPreviewSession().catch(function() {});
+    }
+    if (isHtmlDocumentFile(fileData.file)) {
+        try {
+            currentPage = 0;
+            htmlPreviewDirty = true;
+            await renderHtmlPreviewPage();
+            fileData.loaded = true;
+            exportBtn.disabled = false;
+            exportPageBtn.disabled = true;
+            exportAllBtn.disabled = false;
+        } catch (err) {
+            console.error('Failed to load HTML preview:', err);
+            alert('Failed to load HTML file');
+        }
+        return;
+    }
+
+    if (isVerticalJapaneseLayout()) {
+        try {
+            currentPage = 0;
+            verticalPreviewDirty = true;
+            await renderVerticalPreviewPage();
+            fileData.loaded = true;
+            exportBtn.disabled = false;
+            exportPageBtn.disabled = false;
+            exportAllBtn.disabled = false;
+        } catch (err) {
+            console.error('Failed to load vertical preview:', err);
+            alert('Failed to load EPUB file');
+        }
+        return;
+    }
+
+    var data = await prepareEpubBytesForLayoutMode(fileData.file);
 
     // Load EPUB into renderer
     var ptr = Module.allocateMemory(data.length);
@@ -347,6 +1158,7 @@ async function switchToFile(index) {
         renderer.configureStatusBar(false, false, false, false, false, false, false, false, false);
 
         applySettings();
+        applyLayoutStyleSheet();
 
         totalPages = renderer.getPageCount();
         currentPage = 0;
@@ -377,10 +1189,19 @@ async function switchToFile(index) {
 }
 
 function clearPreview() {
+    if (marginPreviewTimer) {
+        clearTimeout(marginPreviewTimer);
+        marginPreviewTimer = null;
+    }
+    closeVerticalPreviewSession().catch(function() {});
+    closeHtmlPreviewSession().catch(function() {});
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    currentPage = 0;
+    totalPages = 0;
+    currentToc = [];
     bookTitle.textContent = 'No book loaded';
-    bookAuthor.textContent = 'Drop an EPUB file to start';
+    bookAuthor.textContent = 'Drop an EPUB or HTML file to start';
     pageInfo.textContent = 'Page 0 / 0';
     showNoChaptersMessage();
     exportBtn.disabled = true;
@@ -388,6 +1209,12 @@ function clearPreview() {
     exportAllBtn.disabled = true;
     prevBtn.disabled = true;
     nextBtn.disabled = true;
+    verticalPreviewSessionId = null;
+    verticalPreviewSignature = '';
+    verticalPreviewDirty = false;
+    htmlPreviewSessionId = null;
+    htmlPreviewSignature = '';
+    htmlPreviewDirty = false;
 }
 
 function showNoChaptersMessage() {
@@ -634,6 +1461,21 @@ function drawStatusBar(imageData) {
 
 // ==================== Rendering ====================
 function renderCurrentPage() {
+    var fileData = loadedFiles[currentFileIndex];
+    if (fileData && isHtmlDocumentFile(fileData.file)) {
+        renderHtmlPreviewPage().catch(function(err) {
+            console.error('Error rendering HTML preview page:', err);
+        });
+        return;
+    }
+
+    if (isVerticalJapaneseLayout()) {
+        renderVerticalPreviewPage().catch(function(err) {
+            console.error('Error rendering vertical preview page:', err);
+        });
+        return;
+    }
+
     if (!wasmReady || !renderer) return;
 
     try {
@@ -676,11 +1518,16 @@ function renderCurrentPage() {
 }
 
 function applySettings() {
+    var fileData = loadedFiles[currentFileIndex];
+    if (isVerticalJapaneseLayout() || (fileData && isHtmlDocumentFile(fileData.file))) {
+        return;
+    }
+
     if (!renderer) return;
 
     try {
-        var m = parseInt(margin.value) || 16;
-        renderer.setMargins(m, m, m, m);
+        var margins = getResolvedMarginPixels();
+        renderer.setMargins(margins.left, margins.top, margins.right, margins.bottom);
         renderer.setFontSize(parseInt(fontSize.value) || 34);
         renderer.setInterlineSpace(parseInt(lineHeight.value) || 120);
         renderer.setFontWeight(parseInt(fontWeight.value) || 400);
@@ -696,6 +1543,9 @@ function applySettings() {
 
         // Set hyphenation language if method exists
         var hyphLang = hyphenationLang.value;
+        if (hyphLang === 'auto' && (fontFamily.value === 'Zen Old Mincho' || isVerticalJapaneseLayout())) {
+            hyphLang = 'ja';
+        }
         if (hyphLang && hyphLang !== 'auto' && renderer.setHyphenationLanguage) {
             renderer.setHyphenationLanguage(hyphLang);
         }
@@ -807,11 +1657,11 @@ function setupSettings() {
     syncInputs(fontSize, fontSizeNum, 'fontSizeValue');
     syncInputs(fontWeight, fontWeightNum, 'fontWeightValue');
     syncInputs(lineHeight, lineHeightNum, 'lineHeightValue');
-    syncInputs(margin, marginNum, 'marginValue');
     syncInputs(ditherStrength, ditherStrengthNum, 'ditherStrengthValue');
     syncInputs(document.getElementById('maxImageWidth'),
                document.getElementById('maxImageWidthNum'),
                'maxImageWidthValue');
+    setupMarginControls();
 
     // Toggle dependent image controls when processImages changes
     var optProcessImages = document.getElementById('optProcessImages');
@@ -881,6 +1731,7 @@ function setupSettings() {
             SCREEN_WIDTH = DEVICES[preset].width;
             SCREEN_HEIGHT = DEVICES[preset].height;
             updateCanvasSize();
+            markVerticalPreviewDirty();
         }
 
         // Update preview scale for new device DPI
@@ -899,14 +1750,28 @@ function setupSettings() {
                 orientBtns[j].classList.remove('active');
             }
             this.classList.add('active');
+            markVerticalPreviewDirty();
             updateOrientation(parseInt(this.getAttribute('data-orientation')));
         });
     }
 
     // Text align change
     textAlign.addEventListener('change', function() {
+        markTextPreviewDirty();
         applySettings();
         renderCurrentPage();
+    });
+
+    // Layout mode change - reload the current EPUB so pagination matches the writing mode
+    layoutMode.addEventListener('change', async function() {
+        markTextPreviewDirty();
+        if (loadedFiles.length > 0 && loadedFiles[currentFileIndex]) {
+            await switchToFile(currentFileIndex);
+        } else if (wasmReady && renderer) {
+            applySettings();
+            applyLayoutStyleSheet();
+            renderCurrentPage();
+        }
     });
 
     // Hyphenation mode - show/hide language dropdown
@@ -914,12 +1779,14 @@ function setupSettings() {
         var langGroup = document.getElementById('hyphenationLangGroup');
         langGroup.style.display = hyphenation.value === '0' ? 'none' : 'block';
         applySettings();
+        markVerticalPreviewDirty();
         renderCurrentPage();
     });
 
     // Hyphenation language change
     hyphenationLang.addEventListener('change', function() {
         applySettings();
+        markVerticalPreviewDirty();
         renderCurrentPage();
     });
 
@@ -987,18 +1854,22 @@ function syncInputs(slider, num, valueId) {
     slider.addEventListener('input', function() {
         num.value = slider.value;
         if (valueEl) valueEl.textContent = slider.value;
+        markTextPreviewDirty();
     });
 
     num.addEventListener('input', function() {
         slider.value = num.value;
         if (valueEl) valueEl.textContent = num.value;
+        markTextPreviewDirty();
     });
 
     slider.addEventListener('change', function() {
+        markTextPreviewDirty();
         applySettings();
         renderCurrentPage();
     });
     num.addEventListener('change', function() {
+        markTextPreviewDirty();
         applySettings();
         renderCurrentPage();
     });
@@ -1021,6 +1892,42 @@ function syncInputsRenderOnly(slider, num, valueId) {
     });
 }
 
+function setupMarginControls() {
+    var marginControls = [
+        { input: marginTop, unit: marginTopUnit },
+        { input: marginRight, unit: marginRightUnit },
+        { input: marginBottom, unit: marginBottomUnit },
+        { input: marginLeft, unit: marginLeftUnit }
+    ];
+
+    function updateMargins() {
+        markTextPreviewDirty();
+        applySettings();
+        renderCurrentPage();
+    }
+
+    for (var i = 0; i < marginControls.length; i++) {
+        var control = marginControls[i];
+        if (!control.input || !control.unit) {
+            continue;
+        }
+
+        control.input.addEventListener('input', function() {
+            markTextPreviewDirty();
+            applySettings();
+            schedulePreviewRefresh();
+        });
+        control.input.addEventListener('change', updateMargins);
+        control.unit.addEventListener('change', updateMargins);
+    }
+
+    // Keep the controls readable in the narrower sidebar.
+    if (marginTop && marginTop.value === '') marginTop.value = '16';
+    if (marginRight && marginRight.value === '') marginRight.value = '16';
+    if (marginBottom && marginBottom.value === '') marginBottom.value = '16';
+    if (marginLeft && marginLeft.value === '') marginLeft.value = '16';
+}
+
 function updateCanvasSize() {
     if (devicePreset.value === 'custom') {
         SCREEN_WIDTH = parseInt(document.getElementById('customWidth').value);
@@ -1029,6 +1936,19 @@ function updateCanvasSize() {
 
     previewCanvas.width = SCREEN_WIDTH;
     previewCanvas.height = SCREEN_HEIGHT;
+
+    var fileData = loadedFiles[currentFileIndex];
+    if (fileData && isHtmlDocumentFile(fileData.file)) {
+        htmlPreviewDirty = true;
+        renderCurrentPage();
+        return;
+    }
+
+    if (isVerticalJapaneseLayout()) {
+        markVerticalPreviewDirty();
+        renderCurrentPage();
+        return;
+    }
 
     if (renderer) {
         renderer.resize(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -1054,21 +1974,35 @@ function updateOrientation(rotation) {
 
 // ==================== Export Functions ====================
 async function exportXTC() {
-    if (!renderer || totalPages === 0) return;
+    var currentFile = loadedFiles[currentFileIndex];
+    if (!currentFile || totalPages === 0) return;
+    if (!isBrowserRendererFile(currentFile.file) && (!renderer || !wasmReady)) return;
 
     var isHQ = qualityMode.value === 'hq';
     var extension = isHQ ? 'xtch' : 'xtc';
-    var filename = loadedFiles[currentFileIndex].name.replace('.epub', '.' + extension);
+    var filename = replaceFileExtension(currentFile.name, extension);
+    var useBrowserRenderer = isBrowserRendererFile(currentFile.file);
 
     progressContainer.style.display = 'block';
     progressText.textContent = 'Generating XTC...';
     progressFill.style.width = '0%';
 
     try {
-        var xtcData = await generateXTC(function(progress, page) {
-            progressFill.style.width = progress + '%';
-            progressText.textContent = 'Processing page ' + page + ' / ' + totalPages;
-        });
+        var xtcData;
+        if (useBrowserRenderer) {
+            progressText.textContent = 'Generating XTC with browser renderer...';
+            xtcData = await exportWithBrowserBackend(currentFile.file, filename, function(job) {
+                if (!job) return;
+                var percent = Number.isFinite(job.percent) ? job.percent : (job.total > 0 ? Math.round((job.current / job.total) * 100) : 0);
+                progressFill.style.width = percent + '%';
+                progressText.textContent = formatBrowserJobStatus(job);
+            });
+        } else {
+            xtcData = await generateXTC(function(progress, page) {
+                progressFill.style.width = progress + '%';
+                progressText.textContent = 'Processing page ' + page + ' / ' + totalPages;
+            });
+        }
 
         downloadFile(xtcData, filename);
         progressText.textContent = 'Export complete!';
@@ -1084,6 +2018,12 @@ async function exportXTC() {
 }
 
 async function exportCurrentPage() {
+    var currentFile = loadedFiles[currentFileIndex];
+    if (isBrowserRendererFile(currentFile.file)) {
+        alert('Current-page export is unavailable for browser-rendered documents. Please export the full book instead.');
+        return;
+    }
+
     if (!renderer) return;
 
     var isHQ = qualityMode.value === 'hq';
@@ -1107,12 +2047,23 @@ async function exportAllFiles() {
 
         await switchToFile(i);
 
-        var xtcData = await generateXTC(function(progress, page) {
-            var overallProgress = ((i + progress / 100) / loadedFiles.length) * 100;
-            progressFill.style.width = overallProgress + '%';
-        });
+        var xtcData;
+        if (isBrowserRendererFile(loadedFiles[i].file)) {
+            xtcData = await exportWithBrowserBackend(loadedFiles[i].file, replaceFileExtension(loadedFiles[i].name, extension), function(job) {
+                if (!job) return;
+                var percent = Number.isFinite(job.percent) ? job.percent : (job.total > 0 ? Math.round((job.current / job.total) * 100) : 0);
+                var overallProgress = ((i + percent / 100) / loadedFiles.length) * 100;
+                progressFill.style.width = overallProgress + '%';
+                progressText.textContent = formatBrowserJobStatus(job);
+            });
+        } else {
+            xtcData = await generateXTC(function(progress, page) {
+                var overallProgress = ((i + progress / 100) / loadedFiles.length) * 100;
+                progressFill.style.width = overallProgress + '%';
+            });
+        }
 
-        var filename = loadedFiles[i].name.replace('.epub', '.' + extension);
+        var filename = replaceFileExtension(loadedFiles[i].name, extension);
         zip.file(filename, xtcData);
     }
 
@@ -1141,7 +2092,7 @@ async function generateXTC(progressCallback) {
     }
 
     // Build XTC container
-    return buildXTCContainer(pages, isHQ);
+    return buildXTCContainer(pages, isHQ, isVerticalJapaneseLayout() ? 2 : 0);
 }
 
 async function renderPageForExport(pageNum) {
@@ -1611,8 +2562,11 @@ function encodeXTH(imageData) {
 }
 
 // ==================== XTC Container ====================
-function buildXTCContainer(pages, isHQ) {
+function buildXTCContainer(pages, isHQ, readDirection) {
     var magic = isHQ ? 'XTCH' : 'XTC\0';
+    if (readDirection === undefined || readDirection === null) {
+        readDirection = 0;
+    }
 
     // Get metadata
     var info = renderer.getDocumentInfo();
@@ -1652,7 +2606,7 @@ function buildXTCContainer(pages, isHQ) {
     view.setUint16(4, 1, true); // Version
     view.setUint16(6, pages.length, true); // Page count
     // Individual flag bytes per XTC spec
-    bytes[8] = 0;   // readDirection (0 = L→R)
+    bytes[8] = readDirection;   // readDirection (0 = L->R, 2 = T->B)
     bytes[9] = 1;   // hasMetadata
     bytes[10] = 0;  // hasThumbnails
     bytes[11] = currentToc.length > 0 ? 1 : 0;  // hasChapters
@@ -2053,6 +3007,7 @@ function setupEventListeners() {
     // Font family change - load Google Fonts on demand
     fontFamily.addEventListener('change', async function() {
         var selectedFont = fontFamily.value;
+        markTextPreviewDirty();
 
         if (selectedFont === 'custom') {
             document.getElementById('customFontInput').click();
@@ -2060,12 +3015,12 @@ function setupEventListeners() {
         }
 
         // Load Google Font if not already loaded
-        if (GOOGLE_FONTS[selectedFont] && !loadedFonts.has(selectedFont)) {
+        if (FONT_FAMILIES[selectedFont] && !loadedFonts.has(selectedFont)) {
             progressContainer.style.display = 'block';
             progressText.textContent = 'Loading font: ' + selectedFont + '...';
             progressFill.style.width = '50%';
 
-            var success = await loadGoogleFont(selectedFont);
+            var success = await loadFontFamily(selectedFont);
 
             if (success) {
                 progressText.textContent = 'Font loaded: ' + selectedFont;
@@ -2102,6 +3057,7 @@ function setupEventListeners() {
         fontFamily.value = option.value;
 
         applySettings();
+        markTextPreviewDirty();
         renderCurrentPage();
     });
 }

@@ -179,6 +179,51 @@ body {
     width: 60px;
 }
 
+.margin-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+}
+
+.margin-field {
+    display: grid;
+    grid-template-columns: minmax(96px, 1fr) 84px;
+    gap: 8px;
+    align-items: center;
+}
+
+.margin-field label {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    color: #aaa;
+    margin: 0;
+}
+
+.margin-field input[type="number"] {
+    width: 100%;
+    min-width: 96px;
+    box-sizing: border-box;
+}
+
+.margin-field select {
+    width: 84px;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 8px;
+    background: #2d2d2d;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #eee;
+    font-size: 12px;
+}
+
+.margin-help {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #777;
+    line-height: 1.4;
+}
+
 input[type="range"] {
     -webkit-appearance: none;
     background: #444;

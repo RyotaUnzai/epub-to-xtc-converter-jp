@@ -5,6 +5,9 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+!.vscode/
+.vscode/*
+!.vscode/tasks.json
 *.swp
 *.swo
 

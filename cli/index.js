@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { minimatch } = require('minimatch');
 const { loadSettings, resolveSettings, validateSettings, validateOptimizerSettings, generateDefaultConfig } = require('./settings');
-const { convertEpub, getOutputPath, cleanup } = require('./converter');
+const { convertEpub, convertHtml, getOutputPath, cleanup } = require('./converter');
 const { optimizeEpub } = require('./optimizer');
 
 program
@@ -20,7 +20,7 @@ program
 
 program
     .command('convert <input>')
-    .description('Convert EPUB file(s) to XTC/XTCH format')
+    .description('Convert EPUB or HTML/XHTML file(s) to XTC/XTCH format')
     .option('-o, --output <path>', 'Output file or directory')
     .option('-c, --config <path>', 'Path to settings JSON file')
     .option('-f, --format <format>', 'Output format: xtc (1-bit) or xtch (2-bit)')
@@ -54,13 +54,13 @@ program
             const stat = fs.statSync(inputPath);
 
             if (stat.isDirectory()) {
-                // Convert all EPUBs in directory
+                // Convert all supported document files in directory
                 await convertDirectory(inputPath, options.output, settings);
-            } else if (stat.isFile() && inputPath.endsWith('.epub')) {
+            } else if (stat.isFile() && isConvertibleInput(inputPath)) {
                 // Convert single file
                 await convertSingleFile(inputPath, options.output, settings);
             } else {
-                console.error('Input must be an EPUB file or directory containing EPUB files');
+                console.error('Input must be an EPUB or HTML/XHTML file, or a directory containing supported files');
                 process.exit(1);
             }
 
@@ -84,7 +84,7 @@ program
             process.exit(1);
         }
 
-        fs.writeFileSync(outputPath, generateDefaultConfig());
+        fs.writeFileSync(outputPath, generateDefaultConfig(outputPath));
         console.log(`Created default settings file: ${outputPath}`);
         console.log('\nImportant: Edit the file to set font.path to your TTF/OTF font file.');
     });
@@ -120,7 +120,7 @@ program
             } else if (stat.isFile() && inputPath.endsWith('.epub')) {
                 await optimizeSingleFile(inputPath, options.output, opts);
             } else {
-                console.error('Input must be an EPUB file or directory containing EPUB files');
+                console.error('Input must be an EPUB/HTML/XHTML file or a directory containing supported files');
                 process.exit(1);
             }
 
@@ -132,6 +132,14 @@ program
 
 function formatSize(bytes) {
     return (bytes / 1024).toFixed(1) + ' KB';
+}
+
+function isConvertibleInput(filePath) {
+    return /\.(epub|html?|xhtml)$/i.test(filePath || '');
+}
+
+function isHtmlInput(filePath) {
+    return /\.(html|htm|xhtml)$/i.test(filePath || '');
 }
 
 async function optimizeSingleFile(inputPath, outputPath, opts) {
@@ -156,13 +164,13 @@ async function optimizeSingleFile(inputPath, outputPath, opts) {
 }
 
 /**
- * Collect EPUB files from a directory, optionally recursive
+ * Collect supported document files from a directory, optionally recursive
  */
-function collectEpubFiles(dir, opts, basedir) {
+function collectDocumentFiles(dir, opts, basedir) {
     basedir = basedir || dir;
     let results = [];
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const include = opts.include || '*.epub';
+    const include = opts.include || '*.{epub,html,htm,xhtml}';
     const exclude = opts.exclude || null;
 
     for (const entry of entries) {
@@ -170,7 +178,7 @@ function collectEpubFiles(dir, opts, basedir) {
         const relPath = path.relative(basedir, fullPath);
 
         if (entry.isDirectory() && opts.recursive) {
-            results = results.concat(collectEpubFiles(fullPath, opts, basedir));
+            results = results.concat(collectDocumentFiles(fullPath, opts, basedir));
         } else if (entry.isFile()) {
             if (!minimatch(entry.name, include)) continue;
             if (exclude && minimatch(entry.name, exclude)) continue;
@@ -182,7 +190,7 @@ function collectEpubFiles(dir, opts, basedir) {
 }
 
 async function optimizeDirectory(inputDir, outputDir, opts) {
-    const files = collectEpubFiles(inputDir, opts, inputDir);
+    const files = collectDocumentFiles(inputDir, opts, inputDir);
 
     if (files.length === 0) {
         console.error('No EPUB files found in directory');
@@ -249,8 +257,9 @@ async function convertSingleFile(inputPath, outputPath, settings) {
     const filename = path.basename(inputPath);
     console.log(`Converting: ${filename}`);
 
-    const result = await convertEpub(inputPath, outputPath, settings, (current, total) => {
-        const percent = Math.round((current / total) * 100);
+    const converter = isHtmlInput(inputPath) ? convertHtml : convertEpub;
+    const result = await converter(inputPath, outputPath, settings, (current, total) => {
+        const percent = total > 0 ? Math.round((current / total) * 100) : 0;
         process.stdout.write(`\r  Progress: ${current}/${total} pages (${percent}%)`);
     });
 
@@ -260,11 +269,11 @@ async function convertSingleFile(inputPath, outputPath, settings) {
 }
 
 async function convertDirectory(inputDir, outputDir, settings) {
-    // Recursively find all EPUB files, preserving relative paths
-    const files = collectEpubFiles(inputDir, { recursive: true, include: '*.epub' }, inputDir);
+    // Recursively find all supported files, preserving relative paths
+    const files = collectDocumentFiles(inputDir, { recursive: true, include: '*.{epub,html,htm,xhtml}' }, inputDir);
 
     if (files.length === 0) {
-        console.error('No EPUB files found in directory (searched recursively)');
+        console.error('No supported files found in directory (searched recursively)');
         process.exit(1);
     }
 
@@ -278,7 +287,7 @@ async function convertDirectory(inputDir, outputDir, settings) {
         }
     }
 
-    console.log(`Converting ${files.length} EPUB file(s)...\n`);
+    console.log(`Converting ${files.length} document file(s)...\n`);
 
     const ext = settings.output.format === 'xtch' ? '.xtch' : '.xtc';
     let successCount = 0;
@@ -294,8 +303,9 @@ async function convertDirectory(inputDir, outputDir, settings) {
         console.log(`[${i + 1}/${files.length}] ${file.relative}`);
 
         try {
-            const result = await convertEpub(file.absolute, outputPath, settings, (current, total) => {
-                const percent = Math.round((current / total) * 100);
+            const converter = isHtmlInput(file.absolute) ? convertHtml : convertEpub;
+            const result = await converter(file.absolute, outputPath, settings, (current, total) => {
+                const percent = total > 0 ? Math.round((current / total) * 100) : 0;
                 process.stdout.write(`\r  Progress: ${current}/${total} pages (${percent}%)`);
             });
 
